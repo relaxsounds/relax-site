@@ -31,13 +31,17 @@ jobs:
           import xml.etree.ElementTree as ET
 
           failures = []
-          base = "https://dmitrijsirsov88398-svg.github.io/relax-site/"
-          wrong_host = "https://relaxsounds.github.io/relax-site"
+          base = "https://relaxsounds.github.io/relax-site/"
+          stale_host = "https://dmitrijsirsov88398-svg.github.io/relax-site"
 
           app = Path("app.js").read_text(encoding="utf-8")
 
-          # Every media path declared by the scene registry must exist.
-          media_paths = sorted(set(re.findall(r'assets/(?:audio|video)/[A-Za-z0-9._/-]+', app)))
+          # Match actual scene media files only, not helper directory strings.
+          media_paths = sorted(set(re.findall(
+              r'assets/(?:audio|video)/[A-Za-z0-9._/-]+\.(?:mp3|wav|mp4|ogg|m4a|webm)',
+              app,
+          )))
+
           if not media_paths:
               failures.append("No scene media paths were found in app.js")
 
@@ -45,15 +49,13 @@ jobs:
               if not Path(media).is_file():
                   failures.append(f"Missing referenced media: {media}")
 
-          # Every desktop scene video must keep a mobile 720p counterpart.
+          # Every desktop scene video must keep a mobile counterpart.
           desktop_videos = [p for p in media_paths if p.startswith("assets/video/optimized/")]
           for desktop in desktop_videos:
               mobile = desktop.replace("assets/video/optimized/", "assets/video/mobile/", 1)
               if not Path(mobile).is_file():
                   failures.append(f"Missing mobile video counterpart: {mobile}")
 
-          # The public URL must stay consistent across canonical, OG/JSON-LD pages,
-          # sitemap and robots. This catches accidental hostname fragmentation.
           seo_files = [
               Path("index.html"),
               Path("rain/index.html"),
@@ -69,8 +71,8 @@ jobs:
                   failures.append(f"Missing SEO file: {path}")
                   continue
               text = path.read_text(encoding="utf-8")
-              if wrong_host in text:
-                  failures.append(f"Legacy/wrong Pages hostname found in {path}")
+              if stale_host in text:
+                  failures.append(f"Stale pre-transfer Pages hostname found in {path}")
 
           expected_urls = {
               base,
@@ -115,7 +117,6 @@ jobs:
           if expected_sitemap not in robots:
               failures.append(f"robots.txt does not reference {expected_sitemap}")
 
-          # Keep runtime cache versions explicit so media changes can be released safely.
           if not re.search(r"const VIDEO_VERSION\s*=\s*\d+", app):
               failures.append("VIDEO_VERSION is missing or non-numeric")
           if not re.search(r"const AUDIO_VERSION\s*=\s*\d+", app):
@@ -127,7 +128,7 @@ jobs:
                   print(f"- {failure}", file=sys.stderr)
               raise SystemExit(1)
 
-          print(f"OK: {len(media_paths)} referenced media paths")
+          print(f"OK: {len(media_paths)} referenced media files")
           print(f"OK: {len(desktop_videos)} desktop/mobile video pairs")
           print(f"OK: {len(expected_urls)} sitemap URLs")
           print("OK: canonical hostname / robots / cache-version policy")
