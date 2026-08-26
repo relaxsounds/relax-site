@@ -1,0 +1,87 @@
+name: RELAX production smoke test
+
+on:
+  workflow_run:
+    workflows:
+      - pages build and deployment
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify published RELAX site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base='https://relaxsounds.github.io/relax-site'
+          index='/tmp/relax-index.html'
+
+          # Pages/CDN can take a short moment to expose the just-deployed commit.
+          ok=0
+          for attempt in $(seq 1 12); do
+            if curl -fsSL --connect-timeout 10 --max-time 30 \
+              "${base}/?smoke=${{ github.event.workflow_run.head_sha }}" \
+              -o "$index"; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo 'Production homepage did not become reachable.' >&2
+            exit 1
+          fi
+
+          grep -q 'https://relaxsounds.github.io/relax-site/' "$index"
+          grep -q 'app.js?v=' "$index"
+          grep -q 'performance.js?v=' "$index"
+          grep -q 'performance.css?v=' "$index"
+
+          if grep -q 'dmitrijsirsov88398-svg.github.io' "$index"; then
+            echo 'Stale GitHub Pages hostname detected in production HTML.' >&2
+            exit 1
+          fi
+
+      - name: Verify SEO endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://relaxsounds.github.io/relax-site'
+
+          curl -fsSL --retry 3 "${base}/robots.txt" -o /tmp/robots.txt
+          curl -fsSL --retry 3 "${base}/sitemap.xml" -o /tmp/sitemap.xml
+
+          grep -q 'Sitemap: https://relaxsounds.github.io/relax-site/sitemap.xml' /tmp/robots.txt
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/</loc>' /tmp/sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/rain/</loc>' /tmp/sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/city/</loc>' /tmp/sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/forest/</loc>' /tmp/sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/ocean/</loc>' /tmp/sitemap.xml
+
+      - name: Verify representative runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://relaxsounds.github.io/relax-site'
+
+          for path in \
+            'app.js' \
+            'performance.js' \
+            'performance.css' \
+            'assets/video/mobile/rain-thunder.mp4' \
+            'assets/audio/city-traffic-loop2.wav'
+          do
+            echo "Checking ${path}"
+            curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
+              --range 0-1023 \
+              "${base}/${path}" \
+              -o /dev/null
+          done
