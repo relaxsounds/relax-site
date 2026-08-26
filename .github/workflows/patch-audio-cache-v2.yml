@@ -1,0 +1,35 @@
+name: Patch RELAX audio cache version
+
+on:
+  push:
+    branches:
+      - release/audio-cache-v2-20260826
+    paths:
+      - .github/workflows/patch-audio-cache-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            app.js
+            index.html
+            .github/scripts/patch_audio_cache.py
+            .github/workflows/patch-audio-cache-v2.yml
+          sparse-checkout-cone-mode: false
+      - run: python3 .github/scripts/patch_audio_cache.py
+      - run: node --check app.js && grep -q 'app.js?v=10' index.html && grep -q 'AUDIO_VERSION = 2' app.js
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html
+          git commit -m "release: version optimized ambience audio"
+          git push origin HEAD:${GITHUB_REF_NAME}
