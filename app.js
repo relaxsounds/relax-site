@@ -1546,11 +1546,14 @@ sceneButtons.forEach(button => {
                 return;
             }
 
-            /* Реальный ранний preload выбранной сцены. */
-            prepareVideoSource(
-                nextVideo,
-                scene.video
-            );
+            /* Видео заранее грузим только во время воспроизведения.
+             * На паузе click переключит лишь лёгкий WebP-постер. */
+            if (playing) {
+                prepareVideoSource(
+                    nextVideo,
+                    scene.video
+                );
+            }
 
         },
         { passive: true }
@@ -1654,7 +1657,11 @@ playButton.addEventListener(
 
             transitionId++;
 
-            currentVideo.pause();
+            /* При паузе освобождаем видеопоток. Poster остаётся
+             * на элементе и мгновенно держит текущий фон. */
+            releaseVideoSource(
+                currentVideo
+            );
 
             await stopCurrentAudio();
 
@@ -1966,10 +1973,6 @@ const loadingScreen =
 const loadingProgress =
     document.querySelector("#loadingProgress");
 
-const loadingVideo =
-    document.querySelector("#videoA");
-
-
 let loadingFinished = false;
 
 
@@ -2004,41 +2007,6 @@ function finishLoading() {
 
 }
 
-
-/*
- * Ждём, пока первое видео сможет
- * нормально начать воспроизведение.
- */
-
-function checkInitialVideo() {
-
-    if (
-        loadingVideo.readyState >= 3
-    ) {
-
-        finishLoading();
-
-    }
-
-}
-
-
-/*
- * Основной вариант
- */
-
-loadingVideo.addEventListener(
-    "canplay",
-    finishLoading,
-    { once: true }
-);
-
-
-/*
- * Если браузер уже успел загрузить видео
- */
-
-checkInitialVideo();
 
 
 /*
