@@ -1,0 +1,135 @@
+name: RELAX static integrity
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: JavaScript syntax
+        run: |
+          node --check app.js
+          node --check performance.js
+
+      - name: Media and SEO integrity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          failures = []
+          base = "https://relaxsounds.github.io/relax-site/"
+          stale_host = "https://dmitrijsirsov88398-svg.github.io/relax-site"
+
+          app = Path("app.js").read_text(encoding="utf-8")
+
+          # Match actual scene media files only, not helper directory strings.
+          media_paths = sorted(set(re.findall(
+              r'assets/(?:audio|video)/[A-Za-z0-9._/-]+\.(?:mp3|wav|mp4|ogg|m4a|webm)',
+              app,
+          )))
+
+          if not media_paths:
+              failures.append("No scene media paths were found in app.js")
+
+          for media in media_paths:
+              if not Path(media).is_file():
+                  failures.append(f"Missing referenced media: {media}")
+
+          # Every desktop scene video must keep a mobile counterpart.
+          desktop_videos = [p for p in media_paths if p.startswith("assets/video/optimized/")]
+          for desktop in desktop_videos:
+              mobile = desktop.replace("assets/video/optimized/", "assets/video/mobile/", 1)
+              if not Path(mobile).is_file():
+                  failures.append(f"Missing mobile video counterpart: {mobile}")
+
+          seo_files = [
+              Path("index.html"),
+              Path("rain/index.html"),
+              Path("city/index.html"),
+              Path("forest/index.html"),
+              Path("ocean/index.html"),
+              Path("sitemap.xml"),
+              Path("robots.txt"),
+          ]
+
+          for path in seo_files:
+              if not path.is_file():
+                  failures.append(f"Missing SEO file: {path}")
+                  continue
+              text = path.read_text(encoding="utf-8")
+              if stale_host in text:
+                  failures.append(f"Stale pre-transfer Pages hostname found in {path}")
+
+          expected_urls = {
+              base,
+              base + "rain/",
+              base + "city/",
+              base + "forest/",
+              base + "ocean/",
+          }
+
+          try:
+              sitemap_root = ET.parse("sitemap.xml").getroot()
+              sitemap_urls = {
+                  element.text.strip()
+                  for element in sitemap_root.iter()
+                  if element.tag.endswith("loc") and element.text
+              }
+              if sitemap_urls != expected_urls:
+                  failures.append(
+                      "sitemap.xml URL set differs from expected public pages: "
+                      f"expected={sorted(expected_urls)} actual={sorted(sitemap_urls)}"
+                  )
+          except Exception as exc:
+              failures.append(f"Could not parse sitemap.xml: {exc}")
+
+          page_expectations = {
+              Path("index.html"): base,
+              Path("rain/index.html"): base + "rain/",
+              Path("city/index.html"): base + "city/",
+              Path("forest/index.html"): base + "forest/",
+              Path("ocean/index.html"): base + "ocean/",
+          }
+
+          for page, expected_url in page_expectations.items():
+              if not page.is_file():
+                  continue
+              text = page.read_text(encoding="utf-8")
+              if expected_url not in text:
+                  failures.append(f"Expected public URL missing from {page}: {expected_url}")
+
+          robots = Path("robots.txt").read_text(encoding="utf-8") if Path("robots.txt").is_file() else ""
+          expected_sitemap = base + "sitemap.xml"
+          if expected_sitemap not in robots:
+              failures.append(f"robots.txt does not reference {expected_sitemap}")
+
+          if not re.search(r"const VIDEO_VERSION\s*=\s*\d+", app):
+              failures.append("VIDEO_VERSION is missing or non-numeric")
+          if not re.search(r"const AUDIO_VERSION\s*=\s*\d+", app):
+              failures.append("AUDIO_VERSION is missing or non-numeric")
+
+          if failures:
+              print("RELAX integrity check failed:", file=sys.stderr)
+              for failure in failures:
+                  print(f"- {failure}", file=sys.stderr)
+              raise SystemExit(1)
+
+          print(f"OK: {len(media_paths)} referenced media files")
+          print(f"OK: {len(desktop_videos)} desktop/mobile video pairs")
+          print(f"OK: {len(expected_urls)} sitemap URLs")
+          print("OK: canonical hostname / robots / cache-version policy")
+          PY
