@@ -1,0 +1,52 @@
+name: Bump RELAX app cache to v8
+
+on:
+  push:
+    branches:
+      - ci/pages-sha-and-cache-20260826
+    paths:
+      - .github/workflows/bump-app-cache-v8.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Sparse checkout index
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            index.html
+            .github/workflows/bump-app-cache-v8.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Bump exact app cache key
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('index.html')
+          text = path.read_text(encoding='utf-8')
+          old = 'app.js?v=7'
+          new = 'app.js?v=8'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected one {old!r}, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -q 'app.js?v=8' index.html
+
+      - name: Commit cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "release: bump app runtime cache to v8"
+          git push origin HEAD:${GITHUB_REF_NAME}
