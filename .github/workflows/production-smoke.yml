@@ -1,44 +1,65 @@
 name: RELAX production smoke test
 
 on:
-  workflow_run:
-    workflows:
-      - pages build and deployment
-    types:
-      - completed
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: relax-production-smoke
+  cancel-in-progress: true
+
 jobs:
   smoke:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      BASE: https://relaxsounds.github.io/relax-site
     steps:
-      - name: Verify published RELAX site
+      - name: Wait for this commit to reach production
         shell: bash
         run: |
           set -euo pipefail
 
-          base='https://relaxsounds.github.io/relax-site'
-          index='/tmp/relax-index.html'
+          source_index='/tmp/source-index.html'
+          prod_index='/tmp/prod-index.html'
+          source_url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/index.html"
 
-          # Pages/CDN can take a short moment to expose the just-deployed commit.
-          ok=0
-          for attempt in $(seq 1 12); do
+          curl -fsSL --retry 3 "$source_url" -o "$source_index"
+          source_hash=$(sha256sum "$source_index" | awk '{print $1}')
+
+          ready=0
+          for attempt in $(seq 1 48); do
             if curl -fsSL --connect-timeout 10 --max-time 30 \
-              "${base}/?smoke=${{ github.event.workflow_run.head_sha }}" \
-              -o "$index"; then
-              ok=1
-              break
+              "${BASE}/?smoke=${GITHUB_SHA}-${attempt}" \
+              -o "$prod_index"; then
+              prod_hash=$(sha256sum "$prod_index" | awk '{print $1}')
+              if [ "$prod_hash" = "$source_hash" ]; then
+                ready=1
+                echo "Production matches commit ${GITHUB_SHA}."
+                break
+              fi
             fi
+
+            echo "Production has not reached ${GITHUB_SHA} yet (attempt ${attempt})."
             sleep 10
           done
 
-          if [ "$ok" -ne 1 ]; then
-            echo 'Production homepage did not become reachable.' >&2
+          if [ "$ready" -ne 1 ]; then
+            echo "Production never matched commit ${GITHUB_SHA}." >&2
             exit 1
           fi
+
+          cp "$prod_index" /tmp/relax-index.html
+
+      - name: Verify published HTML and canonical host
+        shell: bash
+        run: |
+          set -euo pipefail
+          index='/tmp/relax-index.html'
 
           grep -q 'https://relaxsounds.github.io/relax-site/' "$index"
           grep -q 'app.js?v=' "$index"
@@ -50,38 +71,62 @@ jobs:
             exit 1
           fi
 
-      - name: Verify SEO endpoints
+      - name: Verify deployed text assets match this commit
         shell: bash
         run: |
           set -euo pipefail
-          base='https://relaxsounds.github.io/relax-site'
-
-          curl -fsSL --retry 3 "${base}/robots.txt" -o /tmp/robots.txt
-          curl -fsSL --retry 3 "${base}/sitemap.xml" -o /tmp/sitemap.xml
-
-          grep -q 'Sitemap: https://relaxsounds.github.io/relax-site/sitemap.xml' /tmp/robots.txt
-          grep -q '<loc>https://relaxsounds.github.io/relax-site/</loc>' /tmp/sitemap.xml
-          grep -q '<loc>https://relaxsounds.github.io/relax-site/rain/</loc>' /tmp/sitemap.xml
-          grep -q '<loc>https://relaxsounds.github.io/relax-site/city/</loc>' /tmp/sitemap.xml
-          grep -q '<loc>https://relaxsounds.github.io/relax-site/forest/</loc>' /tmp/sitemap.xml
-          grep -q '<loc>https://relaxsounds.github.io/relax-site/ocean/</loc>' /tmp/sitemap.xml
-
-      - name: Verify representative runtime assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          base='https://relaxsounds.github.io/relax-site'
 
           for path in \
             'app.js' \
             'performance.js' \
             'performance.css' \
-            'assets/video/mobile/rain-thunder.mp4' \
-            'assets/audio/city-traffic-loop2.wav'
+            'robots.txt' \
+            'sitemap.xml' \
+            'rain/index.html' \
+            'city/index.html' \
+            'forest/index.html' \
+            'ocean/index.html'
           do
-            echo "Checking ${path}"
+            echo "Comparing ${path}"
+            safe=$(echo "$path" | tr '/' '_')
+
+            curl -fsSL --retry 3 \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/${path}" \
+              -o "/tmp/source-${safe}"
+
+            curl -fsSL --retry 3 \
+              "${BASE}/${path}" \
+              -o "/tmp/prod-${safe}"
+
+            cmp "/tmp/source-${safe}" "/tmp/prod-${safe}"
+          done
+
+      - name: Verify SEO contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q 'Sitemap: https://relaxsounds.github.io/relax-site/sitemap.xml' /tmp/prod-robots.txt
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/</loc>' /tmp/prod-sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/rain/</loc>' /tmp/prod-sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/city/</loc>' /tmp/prod-sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/forest/</loc>' /tmp/prod-sitemap.xml
+          grep -q '<loc>https://relaxsounds.github.io/relax-site/ocean/</loc>' /tmp/prod-sitemap.xml
+
+      - name: Verify representative media is streamable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for path in \
+            'assets/video/mobile/rain-thunder.mp4' \
+            'assets/video/optimized/rain-heavy.mp4' \
+            'assets/audio/city-traffic-loop2.wav' \
+            'assets/audio/forest-birds.mp3'
+          do
+            echo "Range-checking ${path}"
             curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
               --range 0-1023 \
-              "${base}/${path}" \
+              "${BASE}/${path}" \
               -o /dev/null
           done
