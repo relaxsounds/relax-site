@@ -10,11 +10,26 @@ permissions:
 jobs:
   integrity:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout
+      - name: Partial checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            app.js
+            performance.js
+            index.html
+            rain/index.html
+            city/index.html
+            forest/index.html
+            ocean/index.html
+            sitemap.xml
+            robots.txt
+            .github/workflows/static-integrity.yml
+          sparse-checkout-cone-mode: false
 
       - name: JavaScript syntax
         run: |
@@ -27,6 +42,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
+          import subprocess
           import sys
           import xml.etree.ElementTree as ET
 
@@ -34,9 +50,15 @@ jobs:
           base = "https://relaxsounds.github.io/relax-site/"
           stale_host = "https://dmitrijsirsov88398-svg.github.io/relax-site"
 
-          app = Path("app.js").read_text(encoding="utf-8")
+          # Tree metadata is enough to verify media existence; no binary blobs are downloaded.
+          tracked_files = set(
+              subprocess.check_output(
+                  ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+                  text=True,
+              ).splitlines()
+          )
 
-          # Match actual scene media files only, not helper directory strings.
+          app = Path("app.js").read_text(encoding="utf-8")
           media_paths = sorted(set(re.findall(
               r'assets/(?:audio|video)/[A-Za-z0-9._/-]+\.(?:mp3|wav|mp4|ogg|m4a|webm)',
               app,
@@ -46,14 +68,13 @@ jobs:
               failures.append("No scene media paths were found in app.js")
 
           for media in media_paths:
-              if not Path(media).is_file():
+              if media not in tracked_files:
                   failures.append(f"Missing referenced media: {media}")
 
-          # Every desktop scene video must keep a mobile counterpart.
           desktop_videos = [p for p in media_paths if p.startswith("assets/video/optimized/")]
           for desktop in desktop_videos:
               mobile = desktop.replace("assets/video/optimized/", "assets/video/mobile/", 1)
-              if not Path(mobile).is_file():
+              if mobile not in tracked_files:
                   failures.append(f"Missing mobile video counterpart: {mobile}")
 
           seo_files = [
