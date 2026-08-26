@@ -50,7 +50,6 @@ jobs:
           base = "https://relaxsounds.github.io/relax-site/"
           stale_host = "https://dmitrijsirsov88398-svg.github.io/relax-site"
 
-          # Tree metadata is enough to verify media existence; no binary blobs are downloaded.
           tracked_files = set(
               subprocess.check_output(
                   ["git", "ls-tree", "-r", "--name-only", "HEAD"],
@@ -74,8 +73,26 @@ jobs:
           desktop_videos = [p for p in media_paths if p.startswith("assets/video/optimized/")]
           for desktop in desktop_videos:
               mobile = desktop.replace("assets/video/optimized/", "assets/video/mobile/", 1)
+              poster = "assets/video/posters/" + Path(desktop).name.replace(".mp4", ".webp")
+
               if mobile not in tracked_files:
                   failures.append(f"Missing mobile video counterpart: {mobile}")
+              if poster not in tracked_files:
+                  failures.append(f"Missing scene poster: {poster}")
+
+          poster_files = {
+              p for p in tracked_files
+              if p.startswith("assets/video/posters/") and p.endswith(".webp")
+          }
+          expected_posters = {
+              "assets/video/posters/" + Path(video).name.replace(".mp4", ".webp")
+              for video in desktop_videos
+          }
+          if poster_files != expected_posters:
+              failures.append(
+                  "Poster set differs from scene video set: "
+                  f"expected={sorted(expected_posters)} actual={sorted(poster_files)}"
+              )
 
           seo_files = [
               Path("index.html"),
@@ -138,10 +155,9 @@ jobs:
           if expected_sitemap not in robots:
               failures.append(f"robots.txt does not reference {expected_sitemap}")
 
-          if not re.search(r"const VIDEO_VERSION\s*=\s*\d+", app):
-              failures.append("VIDEO_VERSION is missing or non-numeric")
-          if not re.search(r"const AUDIO_VERSION\s*=\s*\d+", app):
-              failures.append("AUDIO_VERSION is missing or non-numeric")
+          for version_name in ("VIDEO_VERSION", "AUDIO_VERSION", "POSTER_VERSION"):
+              if not re.search(rf"const {version_name}\s*=\s*\d+", app):
+                  failures.append(f"{version_name} is missing or non-numeric")
 
           if failures:
               print("RELAX integrity check failed:", file=sys.stderr)
@@ -150,7 +166,7 @@ jobs:
               raise SystemExit(1)
 
           print(f"OK: {len(media_paths)} referenced media files")
-          print(f"OK: {len(desktop_videos)} desktop/mobile video pairs")
+          print(f"OK: {len(desktop_videos)} desktop/mobile/poster scene sets")
           print(f"OK: {len(expected_urls)} sitemap URLs")
-          print("OK: canonical hostname / robots / cache-version policy")
+          print("OK: canonical hostname / robots / media cache-version policy")
           PY
