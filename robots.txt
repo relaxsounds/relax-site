@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://dmitrijsirsov88398-svg.github.io/relax-site/sitemap.xml
+Sitemap: https://relaxsounds.github.io/relax-site/sitemap.xml
