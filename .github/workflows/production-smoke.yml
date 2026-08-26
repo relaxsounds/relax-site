@@ -164,7 +164,8 @@ jobs:
           for path in \
             'assets/video/mobile/rain-thunder.mp4' \
             'assets/video/optimized/rain-heavy.mp4' \
-            'assets/audio/city-traffic-loop2.wav' \
+            'assets/audio/city-traffic-loop2.mp3' \
+            'assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.mp3' \
             'assets/audio/forest-birds.mp3'
           do
             echo "Range-checking ${path}"
