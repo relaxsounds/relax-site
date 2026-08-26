@@ -1597,14 +1597,60 @@ const FINE_POINTER_MEDIA =
 
 if (
     mouseGlow &&
-    FINE_POINTER_MEDIA.matches
+    FINE_POINTER_MEDIA.matches &&
+    !isMobilePerformanceMode()
 ) {
 
-    let mouseX = 0;
-    let mouseY = 0;
+    let mouseX = window.innerWidth / 2;
+    let mouseY = window.innerHeight / 2;
 
-    let glowX = 0;
-    let glowY = 0;
+    let glowX = mouseX;
+    let glowY = mouseY;
+
+    let glowFrame = null;
+
+
+    function animateMouseGlow() {
+
+        glowFrame = null;
+
+        const deltaX =
+            mouseX - glowX;
+
+        const deltaY =
+            mouseY - glowY;
+
+        glowX += deltaX * 0.12;
+        glowY += deltaY * 0.12;
+
+        mouseGlow.style.transform =
+            `translate(${glowX}px, ${glowY}px) translate(-50%, -50%)`;
+
+        if (
+            Math.abs(deltaX) > 0.25 ||
+            Math.abs(deltaY) > 0.25
+        ) {
+            glowFrame =
+                requestAnimationFrame(
+                    animateMouseGlow
+                );
+        }
+
+    }
+
+
+    function queueMouseGlowFrame() {
+
+        if (glowFrame !== null) {
+            return;
+        }
+
+        glowFrame =
+            requestAnimationFrame(
+                animateMouseGlow
+            );
+
+    }
 
 
     document.addEventListener(
@@ -1616,30 +1662,31 @@ if (
 
             mouseGlow.style.opacity = "1";
 
+            queueMouseGlowFrame();
+
         },
         { passive: true }
     );
 
 
-    function animateMouseGlow() {
+    document.addEventListener(
+        "visibilitychange",
+        () => {
 
-        glowX +=
-            (mouseX - glowX) * 0.08;
+            if (
+                document.hidden &&
+                glowFrame !== null
+            ) {
+                cancelAnimationFrame(
+                    glowFrame
+                );
 
-        glowY +=
-            (mouseY - glowY) * 0.08;
+                glowFrame = null;
+            }
 
-        mouseGlow.style.transform =
-            `translate(${glowX}px, ${glowY}px) translate(-50%, -50%)`;
-
-        requestAnimationFrame(
-            animateMouseGlow
-        );
-
-    }
-
-
-    animateMouseGlow();
+        },
+        { passive: true }
+    );
 
 } else if (mouseGlow) {
 
