@@ -1,0 +1,126 @@
+name: Convert active RELAX WAV ambience
+
+on:
+  push:
+    branches:
+      - media/wav-to-mp3-20260826
+    paths:
+      - .github/workflows/convert-active-wav.yml
+
+permissions:
+  contents: write
+
+jobs:
+  convert:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout required files
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            app.js
+            index.html
+            assets/audio
+            .github/workflows/convert-active-wav.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Convert active WAV files to MP3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          convert_one() {
+            src="$1"
+            dst="$2"
+            old_size=$(stat -c%s "$src")
+            sample_rate=$(ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=nw=1:nk=1 "$src")
+
+            ffmpeg -hide_banner -loglevel error -y \
+              -i "$src" \
+              -map_metadata -1 \
+              -vn \
+              -c:a libmp3lame \
+              -b:a 192k \
+              "$dst"
+
+            new_rate=$(ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=nw=1:nk=1 "$dst")
+            new_size=$(stat -c%s "$dst")
+
+            if [ "$sample_rate" != "$new_rate" ]; then
+              echo "Sample rate changed: $src $sample_rate -> $new_rate" >&2
+              exit 1
+            fi
+
+            if [ "$new_size" -ge "$old_size" ]; then
+              echo "Converted file is not smaller: $src $old_size -> $new_size" >&2
+              exit 1
+            fi
+
+            ffmpeg -v error -i "$dst" -f null - </dev/null
+            echo "$src -> $dst | $old_size -> $new_size | ${sample_rate}Hz"
+          }
+
+          convert_one \
+            assets/audio/city-traffic-loop2.wav \
+            assets/audio/city-traffic-loop2.mp3
+
+          convert_one \
+            assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.wav \
+            assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.mp3
+
+      - name: Patch runtime media paths and versions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          app = Path("app.js")
+          text = app.read_text(encoding="utf-8")
+
+          replacements = {
+              "assets/audio/city-traffic-loop2.wav": "assets/audio/city-traffic-loop2.mp3",
+              "assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.wav": "assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.mp3",
+              "const AUDIO_VERSION = 2;": "const AUDIO_VERSION = 3;",
+          }
+
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one occurrence of {old!r}, found {text.count(old)}")
+              text = text.replace(old, new, 1)
+
+          app.write_text(text, encoding="utf-8")
+
+          index = Path("index.html")
+          html = index.read_text(encoding="utf-8")
+          if html.count("app.js?v=10") != 1:
+              raise SystemExit(f"Expected app.js?v=10 once, found {html.count('app.js?v=10')}")
+          index.write_text(html.replace("app.js?v=10", "app.js?v=11", 1), encoding="utf-8")
+          PY
+
+          node --check app.js
+          grep -q 'AUDIO_VERSION = 3' app.js
+          grep -q 'app.js?v=11' index.html
+
+      - name: Remove superseded WAV files
+        run: |
+          rm assets/audio/city-traffic-loop2.wav
+          rm assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.wav
+
+      - name: Commit conversion
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html assets/audio
+          git commit -m "media: replace active WAV ambience with 192k MP3"
+          git push origin HEAD:${GITHUB_REF_NAME}
