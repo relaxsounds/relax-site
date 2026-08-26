@@ -475,9 +475,12 @@ updateVolumeUI();
 // AUDIO
 // =====================================================
 
+const AUDIO_VERSION = 2;
+
 function createAudio(path) {
 
-    const audio = new Audio(path);
+    const audio =
+        new Audio(`${path}?v=${AUDIO_VERSION}`);
 
     audio.loop = true;
     audio.preload =
