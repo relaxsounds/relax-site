@@ -1,0 +1,60 @@
+name: RELAX video inventory
+
+on:
+  push:
+    branches:
+      - analysis/video-inventory-20260826
+    paths:
+      - .github/workflows/video-inventory.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Sparse checkout videos
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            assets/video/optimized
+            assets/video/mobile
+            .github/workflows/video-inventory.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Report video specs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for group in optimized mobile; do
+            total=0
+            echo "=== ${group^^} ==="
+
+            for file in assets/video/${group}/*.mp4; do
+              size=$(stat -c%s "$file")
+              total=$((total + size))
+
+              codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$file")
+              width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$file")
+              height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$file")
+              fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$file")
+              bitrate=$(ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of default=nw=1:nk=1 "$file" || true)
+              duration=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file")
+              audio_streams=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$file" | wc -l)
+
+              echo "$file | bytes=$size | codec=$codec | ${width}x${height} | fps=$fps | bitrate=${bitrate:-unknown} | duration=$duration | audio_streams=$audio_streams"
+            done
+
+            echo "TOTAL ${group}: $total bytes"
+          done
