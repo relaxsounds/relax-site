@@ -108,3 +108,11 @@ html.relax-performance-mode .overlay {
         display: none !important;
     }
 }
+
+/* AFTER DARK is currently only dormant markup: there is no runtime handler
+   or dedicated secret media in the repository. Hide the dead control instead
+   of exposing a button that cannot perform an action. */
+.secret-eyes,
+.secret-mode {
+    display: none !important;
+}
