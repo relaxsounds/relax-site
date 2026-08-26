@@ -480,7 +480,10 @@ function createAudio(path) {
     const audio = new Audio(path);
 
     audio.loop = true;
-    audio.preload = "auto";
+    audio.preload =
+        isMobilePerformanceMode()
+            ? "metadata"
+            : "auto";
 
     // Ставим актуальную громкость сразу.
     // Это убирает конфликт ползунка с fade-анимацией.
@@ -653,7 +656,32 @@ const MOBILE_VIDEO_MEDIA = window.matchMedia(
 
 
 function isMobilePerformanceMode() {
-    return MOBILE_VIDEO_MEDIA.matches;
+    const connection =
+        navigator.connection ||
+        navigator.mozConnection ||
+        navigator.webkitConnection ||
+        null;
+
+    const effectiveType =
+        String(connection?.effectiveType || "");
+
+    const memory =
+        Number(navigator.deviceMemory || 0);
+
+    const cores =
+        Number(navigator.hardwareConcurrency || 0);
+
+    return Boolean(
+        MOBILE_VIDEO_MEDIA.matches ||
+        window.matchMedia("(max-width: 1100px)").matches ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+        connection?.saveData ||
+        effectiveType === "slow-2g" ||
+        effectiveType === "2g" ||
+        effectiveType === "3g" ||
+        (memory > 0 && memory <= 4) ||
+        (cores > 0 && cores <= 4)
+    );
 }
 
 
@@ -1755,7 +1783,7 @@ setTimeout(() => {
 
     finishLoading();
 
-}, 8000);
+}, 1800);
 // =====================================================
 // INITIAL LOAD FADE
 // =====================================================
