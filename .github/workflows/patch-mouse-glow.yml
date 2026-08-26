@@ -1,0 +1,59 @@
+name: Patch RELAX mouse glow CPU loop
+
+on:
+  push:
+    branches:
+      - perf/runtime-cpu-pages-20260826
+    paths:
+      - .github/workflows/patch-mouse-glow.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Sparse checkout runtime files
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            app.js
+            .github/workflows/patch-mouse-glow.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Replace perpetual mouse glow animation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app.js')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''if (\n    mouseGlow &&\n    FINE_POINTER_MEDIA.matches\n) {\n\n    let mouseX = 0;\n    let mouseY = 0;\n\n    let glowX = 0;\n    let glowY = 0;\n\n\n    document.addEventListener(\n        "mousemove",\n        (event) => {\n\n            mouseX = event.clientX;\n            mouseY = event.clientY;\n\n            mouseGlow.style.opacity = "1";\n\n        },\n        { passive: true }\n    );\n\n\n    function animateMouseGlow() {\n\n        glowX +=\n            (mouseX - glowX) * 0.08;\n\n        glowY +=\n            (mouseY - glowY) * 0.08;\n\n        mouseGlow.style.transform =\n            `translate(${glowX}px, ${glowY}px) translate(-50%, -50%)`;\n\n        requestAnimationFrame(\n            animateMouseGlow\n        );\n\n    }\n\n\n    animateMouseGlow();\n\n} else if (mouseGlow) {'''
+
+          new = '''if (\n    mouseGlow &&\n    FINE_POINTER_MEDIA.matches &&\n    !isMobilePerformanceMode()\n) {\n\n    let mouseX = window.innerWidth / 2;\n    let mouseY = window.innerHeight / 2;\n\n    let glowX = mouseX;\n    let glowY = mouseY;\n\n    let glowFrame = null;\n\n\n    function animateMouseGlow() {\n\n        glowFrame = null;\n\n        const deltaX =\n            mouseX - glowX;\n\n        const deltaY =\n            mouseY - glowY;\n\n        glowX += deltaX * 0.12;\n        glowY += deltaY * 0.12;\n\n        mouseGlow.style.transform =\n            `translate(${glowX}px, ${glowY}px) translate(-50%, -50%)`;\n\n        if (\n            Math.abs(deltaX) > 0.25 ||\n            Math.abs(deltaY) > 0.25\n        ) {\n            glowFrame =\n                requestAnimationFrame(\n                    animateMouseGlow\n                );\n        }\n\n    }\n\n\n    function queueMouseGlowFrame() {\n\n        if (glowFrame !== null) {\n            return;\n        }\n\n        glowFrame =\n            requestAnimationFrame(\n                animateMouseGlow\n            );\n\n    }\n\n\n    document.addEventListener(\n        "mousemove",\n        (event) => {\n\n            mouseX = event.clientX;\n            mouseY = event.clientY;\n\n            mouseGlow.style.opacity = "1";\n\n            queueMouseGlowFrame();\n\n        },\n        { passive: true }\n    );\n\n\n    document.addEventListener(\n        "visibilitychange",\n        () => {\n\n            if (\n                document.hidden &&\n                glowFrame !== null\n            ) {\n                cancelAnimationFrame(\n                    glowFrame\n                );\n\n                glowFrame = null;\n            }\n\n        },\n        { passive: true }\n    );\n\n} else if (mouseGlow) {'''
+
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one mouse glow block, found {count}')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate JavaScript
+        run: node --check app.js
+
+      - name: Commit runtime optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "perf: stop mouse glow animation when idle"
+          git push origin HEAD:${GITHUB_REF_NAME}
