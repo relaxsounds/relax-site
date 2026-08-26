@@ -707,6 +707,30 @@ function getVideoUrl(videoPath) {
     return `${runtimePath}?v=${VIDEO_VERSION}`;
 
 }
+
+
+function prepareVideoSource(video, videoPath) {
+
+    if (!video || !videoPath) {
+        return "";
+    }
+
+    const url = getVideoUrl(videoPath);
+    const currentSource = video.getAttribute("src") || "";
+
+    if (currentSource === url || video.src.endsWith(url)) {
+        video.preload = "auto";
+        return url;
+    }
+
+    clearPendingVideoReady(video);
+    video.pause();
+    video.preload = "auto";
+    video.src = url;
+    video.load();
+
+    return url;
+}
 	
 function clearPendingVideoReady(video) {
 
@@ -849,12 +873,10 @@ function switchVideo(videoPath) {
     incoming.style.opacity = "0";
     incoming.style.visibility = "hidden";
 
-    incoming.preload = "auto";
-
-    incoming.src =
-        getVideoUrl(videoPath);
-
-    incoming.load();
+    prepareVideoSource(
+        incoming,
+        videoPath
+    );
 
 
     const startPlayback = () => {
@@ -975,6 +997,12 @@ function switchVideo(videoPath) {
                     outgoing.style.opacity = "0";
                     outgoing.style.visibility =
                         "hidden";
+
+                    outgoing.removeAttribute("src");
+
+                    try {
+                        outgoing.load();
+                    } catch (error) {}
 
                     videoTransitionTimer = null;
 
@@ -1356,19 +1384,11 @@ sceneButtons.forEach(button => {
                 return;
             }
 
-            /*
-             * Начинаем сетевую загрузку немного раньше —
-             * ещё в момент касания/нажатия.
-             */
-            const url =
-                getVideoUrl(scene.video);
-
-            if (
-                nextVideo.src !== url &&
-                !nextVideo.src.endsWith(url)
-            ) {
-                nextVideo.preload = "auto";
-            }
+            /* Реальный ранний preload выбранной сцены. */
+            prepareVideoSource(
+                nextVideo,
+                scene.video
+            );
 
         },
         { passive: true }
