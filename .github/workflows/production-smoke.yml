@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: relax-production-smoke
@@ -15,51 +16,123 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       BASE: https://relaxsounds.github.io/relax-site
     steps:
-      - name: Wait for this commit to reach production
+      - name: Wait for GitHub Pages deployment for this commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          source_index='/tmp/source-index.html'
-          prod_index='/tmp/prod-index.html'
-          source_url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/index.html"
-
-          curl -fsSL --retry 3 "$source_url" -o "$source_index"
-          source_hash=$(sha256sum "$source_index" | awk '{print $1}')
-
           ready=0
-          for attempt in $(seq 1 48); do
-            if curl -fsSL --connect-timeout 10 --max-time 30 \
-              "${BASE}/?smoke=${GITHUB_SHA}-${attempt}" \
-              -o "$prod_index"; then
-              prod_hash=$(sha256sum "$prod_index" | awk '{print $1}')
-              if [ "$prod_hash" = "$source_hash" ]; then
-                ready=1
-                echo "Production matches commit ${GITHUB_SHA}."
-                break
-              fi
-            fi
+          for attempt in $(seq 1 72); do
+            json=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&event=dynamic&per_page=20")
 
-            echo "Production has not reached ${GITHUB_SHA} yet (attempt ${attempt})."
+            state=$(printf '%s' "$json" | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          runs = [r for r in data.get("workflow_runs", []) if r.get("name") == "pages build and deployment"]
+          if not runs:
+              print("missing")
+          else:
+              run = runs[0]
+              status = run.get("status") or "unknown"
+              conclusion = run.get("conclusion") or ""
+              print(f"{status}:{conclusion}")
+          ')
+
+            echo "Pages state for ${GITHUB_SHA}: ${state}"
+
+            case "$state" in
+              completed:success)
+                ready=1
+                break
+                ;;
+              completed:*)
+                echo "GitHub Pages failed for ${GITHUB_SHA}: ${state}" >&2
+                exit 1
+                ;;
+            esac
+
             sleep 10
           done
 
           if [ "$ready" -ne 1 ]; then
-            echo "Production never matched commit ${GITHUB_SHA}." >&2
+            echo "Timed out waiting for GitHub Pages deployment of ${GITHUB_SHA}." >&2
             exit 1
           fi
 
-          cp "$prod_index" /tmp/relax-index.html
+      - name: Wait for CDN text assets to match this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          paths=(
+            'index.html'
+            'app.js'
+            'performance.js'
+            'performance.css'
+            'robots.txt'
+            'sitemap.xml'
+            'rain/index.html'
+            'city/index.html'
+            'forest/index.html'
+            'ocean/index.html'
+          )
+
+          for path in "${paths[@]}"; do
+            safe=$(echo "$path" | tr '/' '_')
+            curl -fsSL --retry 3 \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/${path}" \
+              -o "/tmp/source-${safe}"
+          done
+
+          ready=0
+          for attempt in $(seq 1 36); do
+            mismatch=0
+
+            for path in "${paths[@]}"; do
+              safe=$(echo "$path" | tr '/' '_')
+
+              if ! curl -fsSL --connect-timeout 10 --max-time 30 \
+                "${BASE}/${path}?smoke=${GITHUB_SHA}-${attempt}" \
+                -o "/tmp/prod-${safe}"; then
+                mismatch=1
+                break
+              fi
+
+              if ! cmp -s "/tmp/source-${safe}" "/tmp/prod-${safe}"; then
+                echo "CDN not current yet: ${path}"
+                mismatch=1
+                break
+              fi
+            done
+
+            if [ "$mismatch" -eq 0 ]; then
+              ready=1
+              echo "Production text assets match ${GITHUB_SHA}."
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "CDN text assets never converged to ${GITHUB_SHA}." >&2
+            exit 1
+          fi
 
       - name: Verify published HTML and canonical host
         shell: bash
         run: |
           set -euo pipefail
-          index='/tmp/relax-index.html'
+          index='/tmp/prod-index.html'
 
           grep -q 'https://relaxsounds.github.io/relax-site/' "$index"
           grep -q 'app.js?v=' "$index"
@@ -70,36 +143,6 @@ jobs:
             echo 'Stale GitHub Pages hostname detected in production HTML.' >&2
             exit 1
           fi
-
-      - name: Verify deployed text assets match this commit
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for path in \
-            'app.js' \
-            'performance.js' \
-            'performance.css' \
-            'robots.txt' \
-            'sitemap.xml' \
-            'rain/index.html' \
-            'city/index.html' \
-            'forest/index.html' \
-            'ocean/index.html'
-          do
-            echo "Comparing ${path}"
-            safe=$(echo "$path" | tr '/' '_')
-
-            curl -fsSL --retry 3 \
-              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/${path}" \
-              -o "/tmp/source-${safe}"
-
-            curl -fsSL --retry 3 \
-              "${BASE}/${path}" \
-              -o "/tmp/prod-${safe}"
-
-            cmp "/tmp/source-${safe}" "/tmp/prod-${safe}"
-          done
 
       - name: Verify SEO contract
         shell: bash
