@@ -1,0 +1,153 @@
+name: Build RELAX scene posters
+
+on:
+  push:
+    branches:
+      - perf/poster-first-load-20260826
+    paths:
+      - .github/workflows/generate-scene-posters.yml
+
+permissions:
+  contents: write
+
+jobs:
+  posters:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout required files
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            app.js
+            index.html
+            assets/video/mobile
+            .github/workflows/generate-scene-posters.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Generate lightweight WebP posters
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/video/posters
+          total=0
+
+          for file in assets/video/mobile/*.mp4; do
+            name=$(basename "$file" .mp4)
+            out="assets/video/posters/${name}.webp"
+
+            ffmpeg -hide_banner -loglevel error -y \
+              -ss 0.35 -i "$file" \
+              -frames:v 1 \
+              -c:v libwebp \
+              -quality 72 \
+              -compression_level 6 \
+              -preset picture \
+              "$out"
+
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$out")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$out")
+            size=$(stat -c%s "$out")
+
+            if [ "$width" != 1280 ] || [ "$height" != 720 ]; then
+              echo "Unexpected poster dimensions for $out: ${width}x${height}" >&2
+              exit 1
+            fi
+
+            ffmpeg -v error -i "$out" -f null - </dev/null
+            total=$((total + size))
+            echo "$out | ${width}x${height} | ${size} bytes"
+          done
+
+          count=$(find assets/video/posters -type f -name '*.webp' | wc -l)
+          if [ "$count" -ne 16 ]; then
+            echo "Expected 16 posters, got $count" >&2
+            exit 1
+          fi
+
+          echo "Poster payload: $total bytes across $count files"
+
+      - name: Patch poster-first runtime
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          app_path = Path('app.js')
+          text = app_path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'const VIDEO_VERSION = 8;\n',
+              'const VIDEO_VERSION = 8;\nconst POSTER_VERSION = 1;\n',
+              'poster version',
+          )
+
+          video_url_block = '''function getVideoUrl(videoPath) {\n\n    const runtimePath =\n        getRuntimeVideoPath(videoPath);\n\n    return `${runtimePath}?v=${VIDEO_VERSION}`;\n\n}\n'''
+
+          poster_helpers = video_url_block + '''\n\nfunction getPosterUrl(videoPath) {\n\n    const filename =\n        String(videoPath || \"\")\n            .split(\"/\")\n            .pop()\n            .replace(/\\.mp4$/i, \".webp\");\n\n    return `assets/video/posters/${filename}?v=${POSTER_VERSION}`;\n\n}\n\n\nfunction setVideoPoster(video, videoPath) {\n\n    if (!video || !videoPath) {\n        return \"\";\n    }\n\n    const posterUrl =\n        getPosterUrl(videoPath);\n\n    video.poster = posterUrl;\n\n    return posterUrl;\n\n}\n\n\nfunction releaseVideoSource(video) {\n\n    if (!video) {\n        return;\n    }\n\n    clearPendingVideoReady(video);\n    video.pause();\n    video.removeAttribute(\"src\");\n\n    try {\n        video.load();\n    } catch (error) {}\n\n}\n'''
+          replace_once(video_url_block, poster_helpers, 'poster helpers')
+
+          prepare_marker = '''    if (!video || !videoPath) {\n        return \"\";\n    }\n\n    const url = getVideoUrl(videoPath);'''
+          prepare_replacement = '''    if (!video || !videoPath) {\n        return \"\";\n    }\n\n    setVideoPoster(video, videoPath);\n\n    const url = getVideoUrl(videoPath);'''
+          replace_once(prepare_marker, prepare_replacement, 'prepare poster')
+
+          switch_marker = '''function switchVideo(videoPath) {\n\n    const id = transitionId;\n\n    const incoming = nextVideo;'''
+          switch_replacement = '''function switchVideo(videoPath) {\n\n    const id = transitionId;\n\n    if (!playing) {\n        switchPausedPoster(\n            videoPath,\n            id\n        );\n        return;\n    }\n\n    const incoming = nextVideo;'''
+          replace_once(switch_marker, switch_replacement, 'paused switch gate')
+
+          switch_function_marker = '''function switchVideo(videoPath) {'''
+          paused_helper = '''function switchPausedPoster(videoPath, id) {\n\n    const incoming = nextVideo;\n    const outgoing = currentVideo;\n\n    if (!incoming || !outgoing) {\n        return;\n    }\n\n    if (videoTransitionTimer) {\n        clearTimeout(videoTransitionTimer);\n        videoTransitionTimer = null;\n    }\n\n    /* A paused scene only needs a still frame. Release any abandoned\n       video request before fetching the tiny poster image. */\n    releaseVideoSource(incoming);\n    releaseVideoSource(outgoing);\n\n    const posterUrl =\n        getPosterUrl(videoPath);\n\n    const image = new Image();\n    image.decoding = \"async\";\n\n    let committed = false;\n\n    const commitPoster = () => {\n\n        if (\n            committed ||\n            id !== transitionId ||\n            playing\n        ) {\n            return;\n        }\n\n        committed = true;\n\n        incoming.poster = posterUrl;\n        incoming.classList.add(\"active\");\n        incoming.style.transition = \"none\";\n        incoming.style.opacity = \"0\";\n        incoming.style.visibility = \"visible\";\n\n        currentVideo = incoming;\n        nextVideo = outgoing;\n\n        void incoming.offsetWidth;\n\n        requestAnimationFrame(() => {\n            requestAnimationFrame(() => {\n\n                if (\n                    id !== transitionId ||\n                    playing\n                ) {\n                    return;\n                }\n\n                incoming.style.transition = \"\";\n                incoming.style.opacity = \"1\";\n                outgoing.style.opacity = \"0\";\n\n            });\n        });\n\n        videoTransitionTimer =\n            setTimeout(() => {\n\n                if (id !== transitionId) {\n                    return;\n                }\n\n                outgoing.classList.remove(\"active\");\n                outgoing.style.opacity = \"0\";\n                outgoing.style.visibility = \"hidden\";\n                videoTransitionTimer = null;\n\n            }, 450);\n\n    };\n\n    image.addEventListener(\n        \"load\",\n        commitPoster,\n        { once: true }\n    );\n\n    image.addEventListener(\n        \"error\",\n        commitPoster,\n        { once: true }\n    );\n\n    image.src = posterUrl;\n\n    if (image.complete) {\n        queueMicrotask(commitPoster);\n    }\n\n}\n\n\n'''
+          replace_once(switch_function_marker, paused_helper + switch_function_marker, 'paused poster helper')
+
+          play_old = '''        } else {\n\n            playing = true;\n\n            safePlayVideo(\n                currentVideo\n            );\n\nconst scene =\n    getCurrentSceneData();\n\nif (scene && scene.audio) {\n\n    startSceneAudio(\n        scene.audio,\n        transitionId\n    );\n\n}\n\n            playButton.textContent = \"Ⅱ\";\n\n        }'''
+
+          play_new = '''        } else {\n\n            playing = true;\n\n            const scene =\n                getCurrentSceneData();\n\n            if (scene) {\n\n                const expectedVideoUrl =\n                    getVideoUrl(scene.video);\n\n                const currentSource =\n                    currentVideo.getAttribute(\"src\") || \"\";\n\n                const canResumeCurrent =\n                    currentSource === expectedVideoUrl ||\n                    currentVideo.src.endsWith(\n                        expectedVideoUrl\n                    );\n\n                if (canResumeCurrent) {\n\n                    safePlayVideo(\n                        currentVideo\n                    );\n\n                } else {\n\n                    transitionId++;\n\n                    switchVideo(\n                        scene.video\n                    );\n\n                }\n\n                if (scene.audio) {\n\n                    startSceneAudio(\n                        scene.audio,\n                        transitionId\n                    );\n\n                }\n\n            }\n\n            playButton.textContent = \"Ⅱ\";\n\n        }'''
+          replace_once(play_old, play_new, 'play handler')
+
+          initial_old = '''currentVideo.src =\n    getVideoUrl(initialScene.video);\n\ncurrentVideo.load();\n\ncurrentVideo.addEventListener(\n    \"loadedmetadata\",\n    () => {\n\n        currentVideo.currentTime = 0.35;\n\n    },\n    { once: true }\n);'''
+
+          initial_new = '''const initialPosterUrl =\n    setVideoPoster(\n        currentVideo,\n        initialScene.video\n    );\n\nconst initialPosterLoader =\n    new Image();\n\ninitialPosterLoader.decoding = \"async\";\ninitialPosterLoader.src =\n    initialPosterUrl;'''
+          replace_once(initial_old, initial_new, 'initial poster')
+
+          loading_marker = '''let loadingFinished = false;\n\n\nfunction finishLoading() {'''
+          loading_replacement = '''let loadingFinished = false;\n\n\ninitialPosterLoader.addEventListener(\n    \"load\",\n    finishLoading,\n    { once: true }\n);\n\ninitialPosterLoader.addEventListener(\n    \"error\",\n    finishLoading,\n    { once: true }\n);\n\n\nfunction finishLoading() {'''
+          replace_once(loading_marker, loading_replacement, 'poster loader event')
+
+          app_path.write_text(text, encoding='utf-8')
+
+          index = Path('index.html')
+          html = index.read_text(encoding='utf-8')
+          if html.count('app.js?v=11') != 1:
+              raise SystemExit(f'Expected app.js?v=11 once, found {html.count("app.js?v=11")}')
+          index.write_text(html.replace('app.js?v=11', 'app.js?v=12', 1), encoding='utf-8')
+          PY
+
+          node --check app.js
+          grep -q 'POSTER_VERSION = 1' app.js
+          grep -q 'app.js?v=12' index.html
+
+      - name: Commit poster system
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html assets/video/posters
+          git commit -m "perf: use scene posters before video playback"
+          git push origin HEAD:${GITHUB_REF_NAME}
