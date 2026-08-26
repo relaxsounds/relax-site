@@ -31,7 +31,7 @@ const sceneVariants = {
             title: "HEAVY RAIN",
             description: "сильный дождь · плотный шум воды",
             video: "assets/video/optimized/rain-heavy.mp4",
-            audio: "assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.wav"
+            audio: "assets/audio/mixkit-rain-in-the-jungle-and-birds-2431.mp3"
         },
 
         thunder: {
@@ -80,7 +80,7 @@ const sceneVariants = {
     title: "CITY TRAFFIC",
     description: "город · движение · шум улиц",
     video: "assets/video/optimized/city-traffic.mp4",
-    audio: "assets/audio/city-traffic-loop2.wav"
+    audio: "assets/audio/city-traffic-loop2.mp3"
 },
 
         rooftop: {
@@ -475,7 +475,7 @@ updateVolumeUI();
 // AUDIO
 // =====================================================
 
-const AUDIO_VERSION = 2;
+const AUDIO_VERSION = 3;
 
 function createAudio(path) {
 
