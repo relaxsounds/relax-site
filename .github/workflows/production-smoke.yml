@@ -162,6 +162,7 @@ jobs:
           set -euo pipefail
 
           for path in \
+            'assets/video/posters/rain-heavy.webp' \
             'assets/video/mobile/rain-thunder.mp4' \
             'assets/video/optimized/rain-heavy.mp4' \
             'assets/audio/city-traffic-loop2.mp3' \
