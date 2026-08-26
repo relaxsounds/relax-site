@@ -1,0 +1,54 @@
+name: Bump RELAX runtime asset versions
+
+on:
+  push:
+    branches:
+      - release/cache-bust-20260826
+    paths:
+      - .github/workflows/bump-runtime-assets.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bump-assets:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5
+
+      - name: Bump exact asset versions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('index.html')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'performance.css?v=1': 'performance.css?v=2',
+              'app.js?v=6': 'app.js?v=7',
+              'performance.js?v=1': 'performance.js?v=2',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected one {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          grep -q 'performance.css?v=2' index.html
+          grep -q 'app.js?v=7' index.html
+          grep -q 'performance.js?v=2' index.html
+
+      - name: Commit cache-bust update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "release: bump runtime asset cache keys"
+          git push origin HEAD:${GITHUB_REF_NAME}
