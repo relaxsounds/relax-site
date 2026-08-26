@@ -1,0 +1,121 @@
+name: RELAX VP9 heavy clip experiment
+
+on:
+  push:
+    branches:
+      - analysis/vp9-heavy-test-20260826
+    paths:
+      - .github/workflows/vp9-heavy-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  vp9-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout heavy source clips
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            assets/video/optimized/forest-wind.mp4
+            assets/video/optimized/rain-heavy.mp4
+            assets/video/optimized/forest-creek.mp4
+            .github/workflows/vp9-heavy-test.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Encode and validate VP9 candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/video/vp9
+          : > /tmp/accepted.txt
+          total_old=0
+          total_new=0
+
+          for name in forest-wind rain-heavy forest-creek; do
+            src="assets/video/optimized/${name}.mp4"
+            dst="assets/video/vp9/${name}.webm"
+
+            old_size=$(stat -c%s "$src")
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$src")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$src")
+            fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$src")
+
+            ffmpeg -hide_banner -loglevel error -y \
+              -i "$src" \
+              -map 0:v:0 -an \
+              -c:v libvpx-vp9 \
+              -b:v 0 -crf 31 \
+              -deadline good -cpu-used 3 \
+              -row-mt 1 -threads 4 -tile-columns 2 \
+              -pix_fmt yuv420p \
+              "$dst"
+
+            new_size=$(stat -c%s "$dst")
+            new_width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$dst")
+            new_height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$dst")
+            new_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$dst")
+
+            if [ "$new_width" != "$width" ] || [ "$new_height" != "$height" ] || [ "$new_fps" != "$fps" ]; then
+              echo "Geometry/FPS changed for $name" >&2
+              exit 1
+            fi
+
+            max_size=$((old_size * 75 / 100))
+            if [ "$new_size" -ge "$max_size" ]; then
+              echo "REJECT size: $name | $old_size -> $new_size"
+              rm -f "$dst"
+              continue
+            fi
+
+            ssim_log="/tmp/${name}-vp9-ssim.log"
+            ffmpeg -hide_banner -loglevel info \
+              -i "$src" -i "$dst" \
+              -lavfi "[0:v][1:v]ssim" \
+              -f null - 2> "$ssim_log"
+            ssim=$(grep -oE 'All:[0-9.]+' "$ssim_log" | tail -1 | cut -d: -f2)
+
+            python3 - "$ssim" <<'PY'
+          import sys
+          score = float(sys.argv[1])
+          if score < 0.97:
+              raise SystemExit(f'SSIM too low: {score}')
+          PY
+
+            ffmpeg -v error -i "$dst" -f null - </dev/null
+
+            total_old=$((total_old + old_size))
+            total_new=$((total_new + new_size))
+            echo "$dst" >> /tmp/accepted.txt
+            echo "ACCEPT: $name | $old_size -> $new_size | SSIM=$ssim"
+          done
+
+          count=$(wc -l < /tmp/accepted.txt)
+          echo "Accepted: $count/3"
+          echo "Accepted-source bytes: $total_old"
+          echo "Accepted-VP9 bytes: $total_new"
+          echo "Accepted savings: $((total_old-total_new))"
+
+      - name: Commit accepted candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/video/vp9/*.webm 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo 'No VP9 candidate passed all thresholds.'
+            exit 0
+          fi
+          git commit -m "test: add accepted VP9 heavy video candidates"
+          git push origin HEAD:${GITHUB_REF_NAME}
